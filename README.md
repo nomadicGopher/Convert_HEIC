@@ -1,4 +1,4 @@
-## ffheic – HEIC → PNG/JPG Converter
+## ffheic
 
 A tiny Bash utility that batch‑converts **HEIC** images to **PNG** or **JPG** using **ffmpeg**.  
 It works in any POSIX‑compatible shell (Linux/macOS, Git Bash on Windows, etc.).
