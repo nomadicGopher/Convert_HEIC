@@ -13,7 +13,7 @@ set -euo pipefail   # abort on error, undefined vars, pipeline failures
 # 1. Ensure the script is running on a Debian-based distro
 # -------------------------------------------------
 if ! command -v apt >/dev/null 2>&1; then
-    echo "Error: This script is intended for Debian-based systems (apt)."
+    echo "Error: This script is intended for Debian-based systems (apt)." >&2
     exit 1
 fi
 
@@ -21,7 +21,7 @@ fi
 # Helper: print usage information and exit
 # -------------------------------------------------
 print_usage() {
-    echo "Usage: $0 -i <input_path> -o <png|jpg>"
+    echo "Usage: $0 -i <input_path> -o <png|jpg>" >&2
     exit 1
 }
 
@@ -41,7 +41,7 @@ done
 # -------------------------------------------------
 [[ -z "${INPUT_PATH:-}" || -z "${OUTPUT_EXTENSION:-}" ]] && print_usage
 if [[ "$OUTPUT_EXTENSION" != "png" && "$OUTPUT_EXTENSION" != "jpg" ]]; then
-    echo "Error: output type must be 'png' or 'jpg'."
+    echo "Error: output type must be 'png' or 'jpg'." >&2
     exit 1
 fi
 
@@ -66,7 +66,6 @@ install_ffmpeg() {
 if ! command -v ffmpeg >/dev/null 2>&1; then
     install_ffmpeg
 else
-    # Verify HEIC decoder is available
     if ! ffmpeg -codecs 2>/dev/null | grep -qE 'heif'; then
         echo "ffmpeg is installed but lacks HEIC support."
         install_ffmpeg
@@ -81,7 +80,7 @@ if [[ -d "$INPUT_PATH" ]]; then
 elif [[ -f "$INPUT_PATH" ]]; then
     HEIC_FILES=("$INPUT_PATH")
 else
-    echo "Error: '$INPUT_PATH' is neither a file nor a directory."
+    echo "Error: '$INPUT_PATH' is neither a file nor a directory." >&2
     exit 1
 fi
 
@@ -104,28 +103,32 @@ CURRENT_TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE_PATH="${OUTPUT_DIRECTORY}/conversion_${CURRENT_TIMESTAMP}.log"
 
 # -------------------------------------------------
-# Conversion loop - write progress to the log file
+# Redirect *all* output (stdout + stderr) to the log file
 # -------------------------------------------------
-{
-    echo "=== Conversion started: $(date) ==="
-    for source_file in "${HEIC_FILES[@]}"; do
-        base_name=$(basename "$source_file" .heic)
-        destination_file="${OUTPUT_DIRECTORY}/${base_name}.${OUTPUT_EXTENSION}"
-
-        if [[ "$OUTPUT_EXTENSION" == "png" ]]; then
-            # PNG: let ffmpeg pick the PNG encoder
-            ffmpeg -hide_banner -loglevel error -y -i "$source_file" "$destination_file"
-        else
-            # JPG: force libx264 and set a compatible pixel format
-            ffmpeg -hide_banner -loglevel error -y -i "$source_file" -c:v libx264 -pix_fmt yuv420p "$destination_file"
-        fi
-
-        echo "Converted: $source_file → $destination_file"
-    done
-    echo "=== Conversion finished: $(date) ==="
-} >"$LOG_FILE_PATH"
+exec >"$LOG_FILE_PATH" 2>&1
 
 # -------------------------------------------------
-# Inform the user where the log can be found
+# Conversion loop - everything now goes to the log
 # -------------------------------------------------
-echo "All conversions logged to: $LOG_FILE_PATH"
+echo "=== Conversion started: $(date) ==="
+for source_file in "${HEIC_FILES[@]}"; do
+    base_name=$(basename "$source_file" .heic)
+    destination_file="${OUTPUT_DIRECTORY}/${base_name}.${OUTPUT_EXTENSION}"
+
+    if [[ "$OUTPUT_EXTENSION" == "png" ]]; then
+        # PNG: let ffmpeg pick the PNG encoder
+        ffmpeg -hide_banner -loglevel error -y -i "$source_file" "$destination_file"
+    else
+        # JPG: force libx264 and set a compatible pixel format
+        ffmpeg -hide_banner -loglevel error -y -i "$source_file" -c:v libx264 -pix_fmt yuv420p "$destination_file"
+    fi
+
+    echo "Converted: $source_file → $destination_file"
+done
+echo "=== Conversion finished: $(date) ==="
+
+# -------------------------------------------------
+# Inform the user (to the terminal) where the log is
+# -------------------------------------------------
+# `>&2` writes to the original stderr, which is still the terminal
+echo "All conversions logged to: $LOG_FILE_PATH" >&2
