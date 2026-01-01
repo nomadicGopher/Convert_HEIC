@@ -88,7 +88,7 @@ func verifyRequirements() (err error) {
 // It handles both single file and directory input.
 func processFiles(inPathInfo os.FileInfo) (err error) {
 	// If inPath is a directory, process all files inside; otherwise, process the single file
-	var files []string
+	var inFiles []string
 	if inPathInfo.IsDir() {
 		entries, err := os.ReadDir(*inPath)
 		if err != nil {
@@ -97,23 +97,23 @@ func processFiles(inPathInfo os.FileInfo) (err error) {
 
 		for _, entry := range entries {
 			if !entry.IsDir() {
-				files = append(files, filepath.Join(*inPath, entry.Name()))
+				inFiles = append(inFiles, filepath.Join(*inPath, entry.Name()))
 			}
 		}
 	} else {
-		files = append(files, *inPath)
+		inFiles = append(inFiles, *inPath)
 	}
 
 	// For each file, run ffmpeg conversion
-	for _, file := range files {
-		outFile := file + "." + *outType
-		cmd := exec.Command("ffmpeg", "-i", file, outFile)
+	for _, inFile := range inFiles {
+		outFile := inFile + "." + *outType
+		cmd := exec.Command("ffmpeg", "-i", inFile, outFile)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		fmt.Printf("Converting %s to %s...\n", file, outFile)
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("Failed to convert %s: %v\n", file, err)
+			return fmt.Errorf("Failed to convert %s: %v\n", inFile, err)
 		}
+		fmt.Printf("Converted %s to %s OK.\n", inFile, outFile)
 	}
 
 	return nil
