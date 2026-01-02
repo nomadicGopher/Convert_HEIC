@@ -1,133 +1,212 @@
-// Package main provides a command-line tool for converting HEIC/HEIF images to PNG or JPEG using ffmpeg.
+// Package main provides a command-line tool for converting HEIC/HEIF images to PNG or JPEG using ImageMagick.
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 var (
-	outType = flag.String("output", "", "png, jpg or jpeg")
-	inPath  = flag.String("input", "", "File or directory path to convert")
+	outType       = flag.String("output", "", "Output image format: png, jpg, or jpeg (required)")
+	inPath        = flag.String("input", "", "File or directory path to convert (required)")
+	workers       = flag.Int("workers", 4, "Number of parallel conversions (only applies to directories)")
+	validOutTypes = map[string]struct{}{
+		"png":  {},
+		"jpg":  {},
+		"jpeg": {},
+	}
 )
 
-// main is the entry point for the ffheic command-line tool.
-// It parses flags, validates input, checks requirements, and processes files.
 func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s -input <file|dir> -output <png|jpg|jpeg> [-workers N]\n", os.Args[0])
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
-	err := verifyRequirements()
-	checkError(err)
+	if err := validateRequiredFlags(); err != nil {
+		log.Fatalf("ERROR: %v\n", err)
+	}
+
+	if err := verifyRequirements(); err != nil {
+		log.Fatalf("ERROR: %v\n", err)
+	}
 
 	inPathInfo, err := validateFlags()
-	checkError(err)
+	if err != nil {
+		log.Fatalf("ERROR: %v\n", err)
+	}
 
-	err = processFiles(inPathInfo)
-	checkError(err)
+	if err := processFiles(inPathInfo); err != nil {
+		log.Fatalf("ERROR: %v\n", err)
+	}
 
-	fmt.Println("INFO: Processing completed successfully.")
+	fmt.Fprintln(os.Stdout, "INFO: Processing completed successfully.")
 }
 
-// verifyRequirements checks that the operating system is supported and that ffmpeg with HEIC/HEIF support is installed.
-func verifyRequirements() (err error) {
+// validateRequiredFlags ensures required flags are provided.
+func validateRequiredFlags() error {
+	if strings.TrimSpace(*inPath) == "" || strings.TrimSpace(*outType) == "" {
+		flag.Usage()
+		return errors.New("both -input and -output flags are required")
+	}
+	return nil
+}
+
+// verifyRequirements checks that the operating system is supported and that ImageMagick with HEIC/HEIF support is installed.
+func verifyRequirements() error {
 	osType := runtime.GOOS
 	switch osType {
 	case "linux":
 		// Verify ImageMagick is installed
 		if _, err := exec.LookPath("convert"); err != nil {
-			return fmt.Errorf("The convert command does not exist, please ensure that imagemagick is installed and accessible via PATH.")
+			return errors.New("the 'convert' command does not exist, please ensure that ImageMagick is installed and accessible via PATH")
 		}
 
 		// Check if 'convert' supports HEIC
 		output, err := exec.Command("convert", "--version").CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("Failed to run 'convert --version': %v", err)
+			return fmt.Errorf("failed to run 'convert --version': %v", err)
 		}
 		if !strings.Contains(strings.ToLower(string(output)), "heic") {
-			return fmt.Errorf("ImageMagick 'convert' does not support HEIC. Try installing libheif* and then reinstall imagemagick.")
+			return errors.New("ImageMagick 'convert' does not support HEIC. Try installing libheif* and then reinstall ImageMagick")
 		}
 	case "windows":
-		return fmt.Errorf("Currently, Windows is not supported.")
+		return errors.New("currently, Windows is not supported")
 	case "darwin":
-		return fmt.Errorf("Currently, Darwin/MacOS is not supported.")
+		return errors.New("currently, Darwin/MacOS is not supported")
 	default:
-		return fmt.Errorf("%s is not supported.", osType)
+		return fmt.Errorf("%s is not supported", osType)
 	}
 
-	fmt.Println("INFO: OS requirements are met.")
+	fmt.Fprintln(os.Stdout, "INFO: OS requirements are met.")
 	return nil
 }
 
 // validateFlags checks the command-line flags for validity and returns information about the input path.
-// It ensures the output type is supported and the input path exists.
-func validateFlags() (inPathInfo os.FileInfo, err error) {
-	// Verify inPath exists
-	if inPathInfo, err = os.Stat(*inPath); err != nil {
-		return nil, err
+func validateFlags() (os.FileInfo, error) {
+	absPath, err := filepath.Abs(*inPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get absolute path: %v", err)
 	}
+	*inPath = absPath
 
-	// Ensure inPath is a full path
-	if *inPath, err = filepath.Abs(*inPath); err != nil {
-		return nil, err
+	inPathInfo, err := os.Stat(*inPath)
+	if err != nil {
+		return nil, fmt.Errorf("input path error: %v", err)
 	}
-	fmt.Println("INFO: Input Path: ", *inPath)
+	fmt.Fprintln(os.Stdout, "INFO: Input Path:", *inPath)
 
-	// Verify output type is viable
-	switch *outType {
-	case "jpeg", "jpg", "png":
-		fmt.Println("INFO: Output Type: ", *outType)
-	default:
-		return nil, fmt.Errorf("Invalid output type. Use 'png', 'jpg' or 'jpeg'.")
+	outTypeLower := strings.ToLower(*outType)
+	if _, ok := validOutTypes[outTypeLower]; !ok {
+		return nil, errors.New("invalid output type. Use 'png', 'jpg', or 'jpeg'")
 	}
+	*outType = outTypeLower
+	fmt.Fprintln(os.Stdout, "INFO: Output Type:", *outType)
 
 	return inPathInfo, nil
 }
 
-// processFiles converts the input file or all files in the input directory to the specified output format using ffmpeg.
-// It handles both single file and directory input.
-func processFiles(inPathInfo os.FileInfo) (err error) {
-	// If inPath is a directory, process all files inside; otherwise, process the single file
-	var inFiles []string
+// processFiles converts the input file or all files in the input directory to the specified output format using ImageMagick.
+// It handles both single file and directory input, and processes directories in parallel.
+func processFiles(inPathInfo os.FileInfo) error {
 	if inPathInfo.IsDir() {
-		entries, err := os.ReadDir(*inPath)
-		if err != nil {
-			return err
-		}
+		return processDirectory(*inPath)
+	}
+	return processSingleFile(*inPath)
+}
 
-		for _, entry := range entries {
-			if !entry.IsDir() && filepath.Ext(entry.Name()) == ".heic" {
-				inFiles = append(inFiles, filepath.Join(*inPath, entry.Name()))
+// processDirectory processes all .heic files in the directory in parallel.
+func processDirectory(dirPath string) error {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return fmt.Errorf("failed to read directory: %v", err)
+	}
+
+	var heicFiles []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if isHeicFile(entry.Name()) {
+			heicFiles = append(heicFiles, filepath.Join(dirPath, entry.Name()))
+		}
+	}
+
+	if len(heicFiles) == 0 {
+		return errors.New("no HEIC files found in the directory")
+	}
+
+	// Parallel processing with worker pool
+	numWorkers := *workers
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+	fileCh := make(chan string, len(heicFiles))
+	errCh := make(chan error, len(heicFiles))
+	var wg sync.WaitGroup
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range fileCh {
+				if err := processSingleFile(file); err != nil {
+					errCh <- err
+				}
 			}
-		}
-	} else {
-		inFiles = append(inFiles, *inPath)
+		}()
 	}
 
-	// For each file, run ffmpeg conversion
-	for _, inFile := range inFiles {
-		outFile := strings.Replace(inFile, ".heic", "."+*outType, 1)
-		cmd := exec.Command("convert", inFile, outFile)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("Failed to convert %s: %v\n", inFile, err)
-		}
-		fmt.Printf("INFO: Converted %s to %s.\n", inFile, outFile)
+	for _, file := range heicFiles {
+		fileCh <- file
 	}
+	close(fileCh)
+	wg.Wait()
+	close(errCh)
 
+	var errs []string
+	for e := range errCh {
+		errs = append(errs, e.Error())
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("some files failed to convert:\n%s", strings.Join(errs, "\n"))
+	}
 	return nil
 }
 
-// checkError panics if the provided error is non-nil.
-// It is used for simple error handling throughout the program.
-func checkError(err error) {
-	if err != nil {
-		fmt.Printf("ERROR: %v", err)
-		os.Exit(1)
+// processSingleFile converts a single HEIC file to the specified output format.
+func processSingleFile(inFile string) error {
+	if !isHeicFile(inFile) {
+		return fmt.Errorf("file %s does not have a .heic extension", inFile)
 	}
+	outFile := buildOutputFilename(inFile, *outType)
+	cmd := exec.Command("convert", inFile, outFile)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to convert %s: %v", inFile, err)
+	}
+	fmt.Fprintf(os.Stdout, "INFO: Converted %s to %s.\n", inFile, outFile)
+	return nil
+}
+
+// isHeicFile checks if the file has a .heic extension (case-insensitive).
+func isHeicFile(filename string) bool {
+	return strings.EqualFold(filepath.Ext(filename), ".heic")
+}
+
+// buildOutputFilename constructs the output filename based on the input file and output type.
+func buildOutputFilename(inFile, outType string) string {
+	ext := filepath.Ext(inFile)
+	base := strings.TrimSuffix(inFile, ext)
+	return base + "." + outType
 }
