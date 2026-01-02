@@ -1,6 +1,6 @@
-# ffheic
+# Convert_HEIC
 
-A CLI utility that batch‑converts **HEIC** images to **PNG** or **JPG/JPEG**
+CLI utility that batch‑converts **HEIC** images to **PNG** or **JPG/JPEG**
 using **ImageMagick**.
 
 ## Features
