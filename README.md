@@ -21,11 +21,11 @@ using **ImageMagick**.
 ## Usage
 
 ```sh
-ffheic -input="filepath|dirpath" -output="png|jpg|jpeg" -workers=4
+Convert_HEIC_{arch} -input="{filePath|directoryPath}" -output="png|jpg|jpeg" -workers=4
 ```
 
 ## Example
 
 ```sh
-ffheic -input="/home/username/Pictures" -output="png"
+Convert_HEIC_amd64 -input="/home/username/Pictures" -output="jpg"
 ```
